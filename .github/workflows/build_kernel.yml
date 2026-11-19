@@ -1,4 +1,4 @@
-name: Build Kernel
+name: Build TouchDirt Kernel, BakaSU
 on:
   workflow_dispatch:
     inputs:
@@ -48,95 +48,118 @@ jobs:
         with:
           repository: Halk56855/android_kernel_samsung_a045
           ref: ${{ inputs.BRANCH }}
-          path: kernel_root
-          show-progress: false
           fetch-depth: 1
 
-      - name: Prepare dependencies
+      - name: Integrating BakaSU
+        if: ${{ inputs.KSU }}
         run: |
-          sudo apt-get update -y
+          echo "[-] Cloning BakaSU repo..."
+          git clone https://github.com/Baka-SU/BakaSU.git KernelSU
+
+          echo "[-] Setup BakaSU..."
+          chmod +x ./KernelSU/kernel/setup.sh
+          ./KernelSU/kernel/setup.sh
+          rm -rf KernelSU
+          git clone https://github.com/Baka-SU/BakaSU.git KernelSU
+
+      - name: SUSFS
+        run: |
+          git clone https://github.com/JackA1ltman/NonGKI_Kernel_Build_2nd --depth 1 SUSFS
+          chmod +x ./SUSFS/Patches/susfs_inline_hook_patches.sh
+          ./SUSFS/Patches/susfs_inline_hook_patches.sh
+
+      - name: Install build dependencies
+        run: |
+          sudo apt-get update
           sudo apt-get install -y \
-            bc cpio flex bison aptitude git python-is-python3 tar perl wget curl lz4 \
-            libssl-dev gcc g++ clang libncurses5-dev ccache make zip xz-utils \
-            device-tree-compiler libfdt-dev gcc-arm-linux-gnueabi
+            bc bison flex libssl-dev gcc g++ clang python3 \
+            libncurses5-dev ccache make git zip wget xz-utils \
+            device-tree-compiler libfdt-dev gcc-arm-linux-gnueabi cpio
 
-      - name: Fetch toolchains
-        working-directory: kernel_root
+      - name: Prepare Toolchains directories
         run: |
-          mkdir -p toolchains
-          cd toolchains
+          mkdir -p toolchain/gcc
+          mkdir -p toolchain/clang
+
+      - name: Download GCC & Clang Toolchain
+        run: |
+          cd toolchain/gcc
           if [[ "${{ inputs.CLANG_SIXTEEN }}" != "true" ]]; then
-            git clone --depth=1 https://gitlab.com/Rissu-Projekt/toolchains/clang-toolchains.git clang-11
+            wget -q --show-progress --retry-connrefused --waitretry=2 --read-timeout=30 -t 5 \
+              https://developer.arm.com/-/media/Files/downloads/gnu/14.2.rel1/binrel/arm-gnu-toolchain-14.2.rel1-x86_64-aarch64-none-linux-gnu.tar.xz -O gcc.tar.xz || \
+            wget -q --show-progress \
+              https://github.com/ravindu644/Android-Kernel-Tutorials/releases/download/toolchains/arm-gnu-toolchain-14.2.rel1-x86_64-aarch64-none-linux-gnu.tar.xz -O gcc.tar.xz
+            tar -xf gcc.tar.xz -C ./
+
+            cd ../clang
+            wget -q --show-progress \
+              https://github.com/ravindu644/Android-Kernel-Tutorials/releases/download/toolchains/clang-r383902.tar.gz -O clang.tar.gz
+            mkdir -p host/linux-x86/clang-r383902
+            tar -xzf clang.tar.gz -C host/linux-x86/clang-r383902
           else
-            mkdir -p clang-16 && cd clang-16
+            wget -q --show-progress --retry-connrefused --waitretry=2 --read-timeout=30 -t 5 \
+              https://developer.arm.com/-/media/Files/downloads/gnu/14.2.rel1/binrel/arm-gnu-toolchain-14.2.rel1-x86_64-aarch64-none-linux-gnu.tar.xz -O gcc.tar.xz || \
+            wget -q --show-progress \
+              https://github.com/ravindu644/Android-Kernel-Tutorials/releases/download/toolchains/arm-gnu-toolchain-14.2.rel1-x86_64-aarch64-none-linux-gnu.tar.xz -O gcc.tar.xz
+            tar -xf gcc.tar.xz -C ./
+
+            cd ../clang
+            mkdir -p host/linux-x86/clang-r475365b && cd host/linux-x86/clang-r475365b
             wget -q -O clang16.tar.gz https://android.googlesource.com/platform/prebuilts/clang/host/linux-x86/+archive/refs/heads/android14-release/clang-r475365b.tar.gz
-            tar -xf clang16.tar.gz && rm clang16.tar.gz && cd ..
-          fi
-          git clone --depth=1 https://github.com/VH-Devices/toolchains.git -b gcc-10.3.0 gcc-10
-
-      - name: Setup BakaSU and SUSFS
-        working-directory: kernel_root
-        run: |
-          if [[ "${{ inputs.KSU }}" = "true" ]]; then
-            git clone --depth=1 https://github.com/Baka-SU/BakaSU.git KernelSU
-            chmod +x ./KernelSU/kernel/setup.sh
-            ./KernelSU/kernel/setup.sh
+            tar -xzf clang16.tar.gz && rm clang16.tar.gz
           fi
 
-          git clone --depth=1 https://github.com/JackA1ltman/NonGKI_Kernel_Build_2nd SUSFS
-          if [ -f "./SUSFS/Patches/susfs_inline_hook_patches.sh" ]; then
-            chmod +x ./SUSFS/Patches/susfs_inline_hook_patches.sh
-            ./SUSFS/Patches/susfs_inline_hook_patches.sh
-          fi
-
-      - name: Prepare timezone fix
-        run: |
-          sudo rm -f /etc/localtime
-          sudo ln -s /usr/share/zoneinfo/Asia/Jakarta /etc/localtime
-
-      - name: Build kernel
-        id: buildKernel
-        working-directory: kernel_root
-        env:
-          KBUILD_BUILD_USER: "${{ github.actor }}"
+      - name: Set Environment Variables
         run: |
           if [[ "${{ inputs.CLANG_SIXTEEN }}" != "true" ]]; then
-            CLANG_VERSION=11
+            CLANG_PATH="$(pwd)/toolchain/clang/host/linux-x86/clang-r383902/bin"
           else
-            CLANG_VERSION=16
+            CLANG_PATH="$(pwd)/toolchain/clang/host/linux-x86/clang-r475365b/bin"
           fi
+          GCC_PATH="$(pwd)/toolchain/gcc/arm-gnu-toolchain-14.2.rel1-x86_64-aarch64-none-linux-gnu/bin"
 
-          export PATH="$(pwd)/toolchains/clang-${CLANG_VERSION}/bin:$PATH"
-          export CROSS_COMPILE="$(pwd)/toolchains/gcc-10/bin/aarch64-buildroot-linux-gnu-"
-          export CROSS_COMPILE_ARM32="arm-linux-gnueabi-"
-          export CLANG_TRIPLE="aarch64-linux-gnu-"
-          export KERNELSU="${{ inputs.KSU }}"
-          export KBUILD_BUILD_HOST="rsuntkOrgs"
-          export DEFCONFIG="${{ inputs.DEFCONFIG }}"
-          export IS_CI=true
-          export LTO="${{ inputs.LTO }}"
-          export DEVICE="A045F"
-          export TARGET_PRODUCT="a04"
+          echo "$CLANG_PATH" >> "$GITHUB_PATH"
+
+          echo "CROSS_COMPILE=$GCC_PATH/aarch64-none-linux-gnu-" >> "$GITHUB_ENV"
+          echo "CROSS_COMPILE_ARM32=arm-linux-gnueabi-" >> "$GITHUB_ENV"
+          echo "CC=clang" >> "$GITHUB_ENV"
+          echo "LD=ld.lld" >> "$GITHUB_ENV"
+          echo "AR=llvm-ar" >> "$GITHUB_ENV"
+          echo "NM=llvm-nm" >> "$GITHUB_ENV"
+          echo "OBJCOPY=llvm-objcopy" >> "$GITHUB_ENV"
+          echo "OBJDUMP=llvm-objdump" >> "$GITHUB_ENV"
+          echo "STRIP=llvm-strip" >> "$GITHUB_ENV"
+          echo "CLANG_TRIPLE=aarch64-linux-gnu-" >> "$GITHUB_ENV"
+          echo "ARCH=arm64" >> "$GITHUB_ENV"
+          echo "KCFLAGS=-w -I$(pwd)/out/security/selinux -I$(pwd)/security/selinux/include -I$(pwd)/security/selinux/ss -I$(pwd)/out/security/selinux/ss" >> "$GITHUB_ENV"
+          echo "CONFIG_SECTION_MISMATCH_WARN_ONLY=y" >> "$GITHUB_ENV"
 
           if [[ "${{ inputs.LLVM }}" = "true" ]]; then
-            export LLVM=1
+            echo "LLVM=1" >> "$GITHUB_ENV"
           fi
           if [[ "${{ inputs.LLVM_IAS }}" = "true" ]]; then
-            export LLVM_IAS=1
+            echo "LLVM_IAS=1" >> "$GITHUB_ENV"
+          fi
+
+      - name: Configure and Compile Kernel
+        run: |
+          DEFCONFIG_NAME="${{ inputs.DEFCONFIG }}"
+          if [[ "$DEFCONFIG_NAME" == *" "* ]] || [ ! -f "arch/arm64/configs/$DEFCONFIG_NAME" ]; then
+            DEFCONFIG_NAME="touchdirt-a04_defconfig"
           fi
 
           if [[ "${{ inputs.SELINUX_PERMISSIVE }}" = "true" ]]; then
             if [ -f "arch/arm64/configs/touchdirt-permissive-config" ]; then
-              cat "arch/arm64/configs/touchdirt-permissive-config" >> "arch/arm64/configs/${DEFCONFIG}"
+              cat "arch/arm64/configs/touchdirt-permissive-config" >> "arch/arm64/configs/$DEFCONFIG_NAME"
             fi
-            echo "CONFIG_SECURITY_SELINUX_ALWAYS_PERMISSIVE=y" >> "arch/arm64/configs/${DEFCONFIG}"
+            echo "CONFIG_SECURITY_SELINUX_ALWAYS_PERMISSIVE=y" >> "arch/arm64/configs/$DEFCONFIG_NAME"
           fi
 
           if [[ "${{ inputs.MISC_OPT_OVERCLOCK }}" = "true" ]]; then
-            echo "CONFIG_MISC_OPT_OVERCLOCK=y" >> "arch/arm64/configs/${DEFCONFIG}"
+            echo "CONFIG_MISC_OPT_OVERCLOCK=y" >> "arch/arm64/configs/$DEFCONFIG_NAME"
           fi
 
-          make -C "$(pwd)" O="$(pwd)/out" ARCH=arm64 "${DEFCONFIG}"
+          make -C "$(pwd)" O="$(pwd)/out" "$DEFCONFIG_NAME"
 
           if [ -f "arch/arm64/configs/touchdirt.config" ]; then
             ./scripts/kconfig/merge_config.sh -O "$(pwd)/out" "$(pwd)/out/.config" arch/arm64/configs/touchdirt.config
@@ -148,59 +171,32 @@ jobs:
             ./scripts/config --file out/.config -e LTO_CLANG_FULL -d LTO_CLANG_THIN -d LTO_NONE
           fi
 
-          make -C "$(pwd)" O="$(pwd)/out" ARCH=arm64 olddefconfig
-          make -C "$(pwd)" O="$(pwd)/out" ARCH=arm64 -j"$(nproc --all)"
+          grep '^CONFIG_LOCALVERSION=' out/.config
 
-          gitsha1=$(git rev-parse --short HEAD)
-          buildDetails="$(make -s kernelversion)-${DEVICE}_${gitsha1}_$(date +'%Y%m%d%H%M%S')"
-          echo "buildDetails=$buildDetails" >> "$GITHUB_OUTPUT"
+          sed -i 's/CONFIG_IKHEADERS=y/CONFIG_IKHEADERS=n/g' "$(pwd)/out/.config"
+          sed -i "s/^CONFIG_LOCALVERSION=.*/CONFIG_LOCALVERSION=\"-TouchDirt-BakaSU-${{ inputs.BRANCH }}\"/" out/.config
+
+          make -C "$(pwd)" O="$(pwd)/out" olddefconfig
+
+          make -C "$(pwd)" O="$(pwd)/out" prepare
+          make -C "$(pwd)" O="$(pwd)/out" scripts
+          make -C "$(pwd)" O="$(pwd)/out" security/
+
+          make -C "$(pwd)" O="$(pwd)/out" -j"$(nproc)" || make -C "$(pwd)" O="$(pwd)/out" -j1
 
       - name: Package AnyKernel3
-        working-directory: kernel_root
         run: |
           DATE=$(date -u +"%Y-%m-%d")
+
           git clone https://github.com/Halk56855/AnyKernel3-a04.git -b master --depth 1 AnyKernel3
 
-          if [ -f "out/arch/arm64/boot/Image.gz-dtb" ]; then
-            cp "out/arch/arm64/boot/Image.gz-dtb" AnyKernel3/Image
-          elif [ -f "out/arch/arm64/boot/Image.gz" ]; then
-            cp "out/arch/arm64/boot/Image.gz" AnyKernel3/Image
-          else
-            cp "out/arch/arm64/boot/Image" AnyKernel3/Image
-          fi
+          cp out/arch/arm64/boot/Image AnyKernel3/Image
 
           cd AnyKernel3
-          zip -r9 "../TouchDirt-${{ steps.buildKernel.outputs.buildDetails }}-${DATE}.zip" . -x ".git/*"
+          zip -r9 "../TouchDirt-BakaSU-${{ inputs.BRANCH }}-${DATE}.zip" . -x ".git/*"
 
       - name: Upload AnyKernel3 ZIP
         uses: actions/upload-artifact@v4
         with:
-          name: TouchDirt-${{ steps.buildKernel.outputs.buildDetails }}
-          path: kernel_root/TouchDirt-*.zip
-
-      - name: Strip LKMs
-        working-directory: kernel_root
-        run: |
-          if [[ "${{ inputs.CLANG_SIXTEEN }}" != "true" ]]; then
-            CLANG_VERSION=11
-          else
-            CLANG_VERSION=16
-          fi
-
-          mkdir -p ../kernel_object_tmp kernel_object
-          if [ -d "out" ]; then
-            find out -type f -name "*.ko" -exec mv -t ../kernel_object_tmp {} +
-          fi
-
-          if compgen -G "../kernel_object_tmp/*.ko" > /dev/null; then
-            for file in ../kernel_object_tmp/*.ko; do
-              "$(pwd)/toolchains/clang-${CLANG_VERSION}/bin/llvm-strip" "$file" --strip-unneeded
-            done
-            mv ../kernel_object_tmp/*.ko "$(pwd)/kernel_object/"
-          fi
-
-      - name: Upload LKM
-        uses: actions/upload-artifact@v4
-        with:
-          name: LKM-${{ steps.buildKernel.outputs.buildDetails }}
-          path: kernel_root/kernel_object/*
+          name: TouchDirt-BakaSU
+          path: TouchDirt-*.zip
